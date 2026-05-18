@@ -1,7 +1,8 @@
 """
-npb_team_stats.py  v8
+npb_team_stats.py  v8_modified
 資料來源：https://npb.jp/bis/teams/results_{npb_id}_{suffix}.html
 新增：matplotlib 視覺化（得分分布直方圖、主客場趨勢折線、回戦系列賽分析）
+擴充：大比分差判讀統計 (差距 >= 5分)
 """
 
 import argparse, json, re, sys, time, platform, math
@@ -230,20 +231,17 @@ def compute_all(games):
     one_run=[g for g in games if abs(g["scored"]-g["allowed"])==1]
     one_run_w=sum(1 for g in one_run if g["result"]=="W")
 
-    # 回戦系列賽（第幾戰勝率）
-    series_stats=defaultdict(lambda:{"W":0,"L":0,"D":0})
-    for g in games:
-        # 把回戦號碼轉換成系列賽內的第幾場
-        # NPB 回戦是整季累計，所以同一對手的連續回戦代表同一系列賽
-        pass
-    # 簡化：直接按回戦號碼 mod 3（或看連續日期判斷）
-    # 用對手+回戦組合，找出系列賽位置
+    # 新增：大比分差 (得失分相差 5 分以上)
+    blowout=[g for g in games if abs(g["scored"]-g["allowed"])>=5]
+    blowout_w=sum(1 for g in blowout if g["result"]=="W")
+    blowout_l=sum(1 for g in blowout if g["result"]=="L")
+
+    # 系列賽第幾場勝率
     series_pos_stats=defaultdict(lambda:{"W":0,"L":0,"D":0})
     opp_rounds=defaultdict(list)
     for g in sorted(games,key=lambda x:(x["opponent"],x["date"])):
         opp_rounds[g["opponent"]].append(g)
     for opp,og in opp_rounds.items():
-        # 按日期排序，找出系列賽內的場次位置（連續日期視為同一系列）
         series_idx=1
         prev_date=None
         for g in og:
@@ -265,6 +263,7 @@ def compute_all(games):
         "streak_val":streak_val,"streak_type":streak_type,
         "opp_stats":dict(opp_stats),
         "one_run_games":len(one_run),"one_run_wins":one_run_w,
+        "blowout_games":len(blowout),"blowout_wins":blowout_w,"blowout_losses":blowout_l,
         "series_pos_stats":dict(series_pos_stats),
     }
 
@@ -279,26 +278,17 @@ def plot_charts(team, games, st):
         print(f"  {YELLOW}[提示] 安裝 matplotlib 以顯示圖表：pip install matplotlib{RESET}")
         return
 
-    # 嘗試載入支援 CJK 的字型（Windows / macOS / Linux 各自優先）
     cjk_fonts = [
-        "Microsoft JhengHei",   # Windows 繁體中文
-        "Microsoft YaHei",      # Windows 簡體中文
-        "Yu Gothic",            # Windows 日文
-        "Meiryo", "MS Gothic", "MS Mincho",
-        "PingFang TC", "Hiragino Sans",       # macOS
-        "Noto Sans CJK JP", "Noto Sans TC",   # Linux
-        "IPAGothic", "WenQuanYi Micro Hei",
+        "Microsoft JhengHei", "Microsoft YaHei", "Yu Gothic", "Meiryo", "MS Gothic",
+        "PingFang TC", "Hiragino Sans", "Noto Sans CJK JP", "Noto Sans TC"
     ]
     available = {f.name for f in fm.fontManager.ttflist}
     chosen = next((f for f in cjk_fonts if f in available), None)
     if chosen:
         plt.rcParams["font.family"] = chosen
-        plt.rcParams["axes.unicode_minus"] = False
     else:
-        # fallback：把中文標題改成 ASCII，不警告也不亂碼
         plt.rcParams["font.family"] = "DejaVu Sans"
 
-    # 若找不到 CJK 字型，標題改用英文避免方塊
     if chosen:
         t1 = "① 得分分布 Scoring Distribution"
         t2 = "② 主客場趨勢 Home/Away Trend"
@@ -313,7 +303,7 @@ def plot_charts(team, games, st):
         xlabel2 = "Date"; xlabel3 = "Series Position"
     name  = team["name"]
     n     = len(games)
-    sorted_g = sorted(games, key=lambda x: x["date"])  # 時序正向
+    sorted_g = sorted(games, key=lambda x: x["date"])
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
     fig.suptitle(f"{name}　近{n}場分析", fontsize=15, fontweight="bold", y=1.01)
@@ -324,25 +314,23 @@ def plot_charts(team, games, st):
         ax.yaxis.label.set_color("white"); ax.title.set_color("white")
         for spine in ax.spines.values(): spine.set_edgecolor("#444")
 
-    # ── 圖1：得分分布直方圖 ───────────────────────────────────────────────
+    # 圖1：得分分布直方圖
     ax1 = axes[0]
     scored  = [g["scored"]  for g in games]
     allowed = [g["allowed"] for g in games]
     bins = range(0, max(max(scored), max(allowed))+2)
     ax1.hist(scored,  bins=bins, alpha=0.75, color="#4CAF50", label="得分 Scored", edgecolor="#1a1a2e")
     ax1.hist(allowed, bins=bins, alpha=0.55, color="#F44336", label="失分 Allowed", edgecolor="#1a1a2e")
-    ax1.axvline(st["avg_scored"],  color="#4CAF50", linestyle="--", linewidth=1.5,
-                label=f"Avg Scored {st['avg_scored']:.1f}")
-    ax1.axvline(st["avg_allowed"], color="#F44336", linestyle="--", linewidth=1.5,
-                label=f"Avg Allowed {st['avg_allowed']:.1f}")
+    ax1.axvline(st["avg_scored"],  color="#4CAF50", linestyle="--", linewidth=1.5, label=f"Avg Scored {st['avg_scored']:.1f}")
+    ax1.axvline(st["avg_allowed"], color="#F44336", linestyle="--", linewidth=1.5, label=f"Avg Allowed {st['avg_allowed']:.1f}")
     ax1.set_title(t1, fontsize=12, pad=10)
     ax1.set_xlabel("Score"); ax1.set_ylabel(ylabel1)
     ax1.legend(fontsize=9, facecolor="#1a1a2e", labelcolor="white", edgecolor="#444")
     ax1.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
 
-    # ── 圖2：主客場趨勢折線圖 ────────────────────────────────────────────
+    # 圖2：主客場趨勢折線圖
     ax2 = axes[1]
-    dates_label = [g["date"][5:] for g in sorted_g]  # MM-DD
+    dates_label = [g["date"][5:] for g in sorted_g]
     x = range(len(sorted_g))
 
     home_x=[i for i,g in enumerate(sorted_g) if g["venue"]=="home"]
@@ -350,22 +338,15 @@ def plot_charts(team, games, st):
     home_sc=[sorted_g[i]["scored"] for i in home_x]
     away_sc=[sorted_g[i]["scored"] for i in away_x]
 
-    ax2.plot(x, [g["scored"] for g in sorted_g],
-             color=team["color"], linewidth=1.5, alpha=0.4, zorder=1)
-    ax2.scatter(home_x, home_sc, color="#4FC3F7", s=80, zorder=3,
-                label="Home", marker="o")
-    ax2.scatter(away_x, away_sc, color="#FFB74D", s=80, zorder=3,
-                label="Away", marker="^")
-    ax2.plot(x, [g["allowed"] for g in sorted_g],
-             color="#F44336", linewidth=1, linestyle="--", alpha=0.5, label="Allowed")
-    ax2.axhline(st["avg_scored"], color="#4CAF50", linestyle=":", linewidth=1,
-                alpha=0.6, label=f"Avg {st['avg_scored']:.1f}")
+    ax2.plot(x, [g["scored"] for g in sorted_g], color=team["color"], linewidth=1.5, alpha=0.4, zorder=1)
+    ax2.scatter(home_x, home_sc, color="#4FC3F7", s=80, zorder=3, label="Home", marker="o")
+    ax2.scatter(away_x, away_sc, color="#FFB74D", s=80, zorder=3, label="Away", marker="^")
+    ax2.plot(x, [g["allowed"] for g in sorted_g], color="#F44336", linewidth=1, linestyle="--", alpha=0.5, label="Allowed")
+    ax2.axhline(st["avg_scored"], color="#4CAF50", linestyle=":", linewidth=1, alpha=0.6, label=f"Avg {st['avg_scored']:.1f}")
 
-    # 勝敗標記
     for i,g in enumerate(sorted_g):
         color_r = "#4CAF50" if g["result"]=="W" else "#F44336" if g["result"]=="L" else "#aaa"
-        ax2.annotate(g["result"], (i, g["scored"]+0.3), fontsize=7,
-                     ha="center", color=color_r)
+        ax2.annotate(g["result"], (i, g["scored"]+0.3), fontsize=7, ha="center", color=color_r)
 
     from matplotlib.ticker import FixedLocator, FixedFormatter
     ax2.xaxis.set_major_locator(FixedLocator(list(x)))
@@ -376,7 +357,7 @@ def plot_charts(team, games, st):
     ax2.legend(fontsize=8, facecolor="#1a1a2e", labelcolor="white", edgecolor="#444")
     ax2.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
 
-    # ── 圖3：回戦系列賽勝率 ──────────────────────────────────────────────
+    # 圖3：回戦系列賽勝率
     ax3 = axes[2]
     sps = st["series_pos_stats"]
     positions = sorted(sps.keys())
@@ -392,13 +373,9 @@ def plot_charts(team, games, st):
         bars = ax3.bar(positions, wp_list, color=bar_colors, edgecolor="#1a1a2e", alpha=0.85)
 
         for bar_obj, wp, n_g in zip(bars, wp_list, n_list):
-            ax3.text(bar_obj.get_x()+bar_obj.get_width()/2,
-                     bar_obj.get_height()+0.02,
-                     f"{wp:.2f}\n({n_g}G)", ha="center", va="bottom",
-                     fontsize=9, color="white")
+            ax3.text(bar_obj.get_x()+bar_obj.get_width()/2, bar_obj.get_height()+0.02, f"{wp:.2f}\n({n_g}G)", ha="center", va="bottom", fontsize=9, color="white")
 
-        ax3.axhline(0.5, color="#FFB74D", linestyle="--", linewidth=1.5,
-                    alpha=0.7, label=".500 line")
+        ax3.axhline(0.5, color="#FFB74D", linestyle="--", linewidth=1.5, alpha=0.7, label=".500 line")
         ax3.set_ylim(0, 1.15)
         ax3.set_title(t3, fontsize=12, pad=10)
         ax3.set_ylabel(ylabel3); ax3.set_xlabel(xlabel3)
@@ -408,8 +385,7 @@ def plot_charts(team, games, st):
         ax3.xaxis.set_major_formatter(FixedFormatter(positions))
         ax3.tick_params(axis="x", rotation=15, labelsize=9)
     else:
-        ax3.text(0.5,0.5,"數據不足", ha="center",va="center",
-                 color="white", transform=ax3.transAxes, fontsize=12)
+        ax3.text(0.5,0.5,"數據不足", ha="center",va="center", color="white", transform=ax3.transAxes, fontsize=12)
         ax3.set_title(t3, fontsize=12, pad=10)
 
     plt.tight_layout()
@@ -493,12 +469,23 @@ def print_report(team, games, st):
     section("🎯 一分差勝率")
     orn=st["one_run_games"]; orw=st["one_run_wins"]
     if orn>0:
-        or_wp=orw/orn; oc=GREEN if or_wp>0.5 else RED if or_wp<0.5 else DIM
+        or_wp=orw/orn; oc=GREEN if or_wp>0.5 else RED if or_wp<0.45 else DIM
         print(f"  一分差 {orn}場  勝{GREEN}{orw}{RESET} 敗{RED}{orn-orw}{RESET}  "
               f"勝率 {oc}{BOLD}{or_wp:.3f}{RESET}  {bar_ascii(or_wp,1.0,20,oc)}")
         print(f"  評估：{'牛棚穩健，接戰能力強' if or_wp>0.55 else '接戰偏弱' if or_wp<0.45 else '接戰能力普通'}")
     else:
         print(f"  {DIM}近{n}場無一分差比賽{RESET}")
+
+    # 新增：大比分差終端機輸出區塊
+    section("💥 大比分差勝率 (差距>=5分)")
+    bon=st["blowout_games"]; bow=st["blowout_wins"]; bol=st["blowout_losses"]
+    if bon>0:
+        bo_wp=bow/bon; boc=GREEN if bo_wp>0.5 else RED if bo_wp<0.5 else DIM
+        print(f"  大比分 {bon}場  勝{GREEN}{bow}{RESET} 敗{RED}{bol}{RESET}  "
+              f"勝率 {boc}{BOLD}{bo_wp:.3f}{RESET}  {bar_ascii(bo_wp,1.0,20,boc)}")
+        print(f"  評估：{'主力輪值與打線核心體質強韌' if bo_wp>0.55 else '缺乏一擊斃命破壞力或先發易崩盤' if bo_wp<0.45 else '大比分實力均衡'}")
+    else:
+        print(f"  {DIM}近{n}場無大比分差比賽{RESET}")
 
     section("📅 系列賽第N場勝率")
     sps=st["series_pos_stats"]

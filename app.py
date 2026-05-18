@@ -2,7 +2,6 @@ from flask import Flask, request, abort
 import os
 import npb_team_stats as npb
 
-# 改用 LINE v3 新版 SDK 匯入方式，並加入了快速回覆 (QuickReply) 所需的元件
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -11,15 +10,15 @@ from linebot.v3.messaging import (
     MessagingApi,
     ReplyMessageRequest,
     TextMessage,
-    QuickReply,       # 新增
-    QuickReplyItem,   # 新增
-    MessageAction     # 新增
+    QuickReply,
+    QuickReplyItem,
+    MessageAction
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
 app = Flask(__name__)
 
-# 🔑 已保留您原本的 Token 與 Secret
+# 🔑 保留您的正式憑證
 LINE_CHANNEL_ACCESS_TOKEN = 'DmjqjDUd46PY0uH4XDzfLub8ZBuKGBdCxjSlRwnGg1CpQ0Zl3OJgJLCjiNap3GMiehSzy6WOhpuJx8glSQPv/nl0xSu8ywkQtQwJNO22U2IYNr6g43EdQp+aPEI1Nr+dmCyQP0frMj2UD6q2RdGVHwdB04t89/1O/w1cDnyilFU='
 LINE_CHANNEL_SECRET = 'dcdc8182d2a1eca73a46d20f1035cc14'
 
@@ -54,11 +53,20 @@ def generate_line_report(team, games, st):
         r = "勝" if g["result"] == "W" else "敗" if g["result"] == "L" else "平"
         report += f"{g['date'][5:]} ({v}) vs {g['opponent'][:2]:<2} | {g['scored']}:{g['allowed']} {r}\n"
 
+    # 牛棚與一分差比賽
     orn = st["one_run_games"]
     orw = st["one_run_wins"]
     if orn > 0:
         or_wp = orw / orn
         report += f"\n🤏 一分差戰績：{orn}場 {orw}勝 (勝率 {or_wp:.3f})"
+    
+    # 新增：大比分差 LINE 戰報輸出
+    bon = st["blowout_games"]
+    bow = st["blowout_wins"]
+    bol = st["blowout_losses"]
+    if bon > 0:
+        bo_wp = bow / bon
+        report += f"\n💥 大比分戰績：{bon}場 {bow}勝 {bol}敗 (勝率 {bo_wp:.3f})"
     
     return report
 
@@ -82,7 +90,6 @@ def handle_message(event):
             target_team = t
             break
 
-    # 情況 A：如果使用者輸入的文字「符合」球隊名稱，就直接出戰報
     if target_team:
         try:
             games = npb.fetch_game_results(target_team, max_games=10)
@@ -97,27 +104,23 @@ def handle_message(event):
             reply_text = f"⚠️ 抓取或處理資料時發生錯誤：\n{str(e)}\n請稍後再試。"
             reply_message = TextMessage(text=reply_text)
             
-    # 情況 B：如果輸入任何其他東西（包含第一句話），就列出 12 隊按鈕讓使用者選
     else:
-        # 動態產生 12 隊的 Quick Reply 按鈕清單 (LINE 規定上限為 13 個，12 個剛剛好！)
         quick_reply_items = []
         for t in npb.ALL_TEAMS:
             quick_reply_items.append(
                 QuickReplyItem(
                     action=MessageAction(
-                        label=t['short'],  # 按鈕上顯示的文字 (例如: 阪神)
-                        text=t['short']    # 使用者點擊後，會自動幫使用者發送出去的文字
+                        label=t['short'],
+                        text=t['short']
                     )
                 )
             )
         
-        # 將按鈕清單綁定到文字訊息上
         reply_message = TextMessage(
             text="⚾ 歡迎使用日職進階戰報小幫手！\n\n請點選下方按鈕，選擇您想查詢的球隊：",
             quick_reply=QuickReply(items=quick_reply_items)
         )
 
-    # 統一回傳訊息給 LINE 伺服器
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         line_bot_api.reply_message_with_http_info(
