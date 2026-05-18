@@ -51,16 +51,14 @@ def generate_line_report(team, games, st):
     for g in games[:5]:
         v = "主" if g["venue"] == "home" else "客"
         r = "勝" if g["result"] == "W" else "敗" if g["result"] == "L" else "平"
-        report += f"{g['date'][5:]} ({v}) vs {g['opponent'][:2]:<2} | {g['scored']}:{g['allowed']} {r}\n"
+        report += f"{g['date'][5:]} ({v}) vs {g['opponent']:<2} | {g['scored']}:{g['allowed']} {r}\n"
 
-    # 牛棚與一分差比賽
     orn = st["one_run_games"]
     orw = st["one_run_wins"]
     if orn > 0:
         or_wp = orw / orn
         report += f"\n🤏 一分差戰績：{orn}場 {orw}勝 (勝率 {or_wp:.3f})"
     
-    # 新增：大比分差 LINE 戰報輸出
     bon = st["blowout_games"]
     bow = st["blowout_wins"]
     bol = st["blowout_losses"]
@@ -86,7 +84,17 @@ def handle_message(event):
     
     target_team = None
     for t in npb.ALL_TEAMS:
-        if user_text in [t['short'], t['name'], t['abbr']]:
+        # 💡 建立超強大兼容別名池，不管是中文、日文舊稱、英文縮寫或全名通通能識別
+        match_pool = [t['short'], t['name'], t['abbr']]
+        if t['abbr'] == 'S': match_pool += ['ヤクルト', '養樂多']
+        if t['abbr'] == 'H': match_pool += ['SoftBank', '軟銀', 'ソフトバンク']
+        if t['abbr'] == 'F': match_pool += ['日ハム', '火腿', '日本ハム']
+        if t['abbr'] == 'B': match_pool += ['オリックス', '歐力士']
+        if t['abbr'] == 'M': match_pool += ['羅德', 'ロッテ']
+        if t['abbr'] == 'E': match_pool += ['樂天', '楽天']
+        if t['abbr'] == 'C': match_pool += ['廣島', '広島']
+        
+        if user_text in match_pool:
             target_team = t
             break
 
@@ -110,7 +118,7 @@ def handle_message(event):
             quick_reply_items.append(
                 QuickReplyItem(
                     action=MessageAction(
-                        label=t['short'],
+                        label=t['short'], # 按鈕標籤現在全部都是親切的中文囉！
                         text=t['short']
                     )
                 )
