@@ -1,67 +1,142 @@
-"""
-npb_team_stats.py  v8_chinese_localized
-資料來源：https://npb.jp/bis/teams/results_{npb_id}_{suffix}.html
-新增：matplotlib 視覺化（得分分布直方圖、主客場趨勢折線、回戰系列賽分析）
-擴充：大比分差判讀統計 (差距 >= 5分)
-優化：全專案繁體中文在地化，自動翻譯日文對手名稱
-"""
+from flask import Flask, request, abort
+import os
+import npb_team_stats as npb
 
-import argparse, json, re, sys, time, platform, math
-from datetime import datetime
-from collections import defaultdict
+from linebot.v3 import WebhookHandler
+from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.messaging import (
+    Configuration,
+    ApiClient,
+    MessagingApi,
+    ReplyMessageRequest,
+    TextMessage,
+    QuickReply,
+    QuickReplyItem,
+    MessageAction
+)
+from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
-try:
-    import requests
-    from bs4 import BeautifulSoup
-except ImportError:
-    print("請先安裝：pip install requests beautifulsoup4"); sys.exit(1)
+app = Flask(__name__)
 
-IS_WINDOWS = platform.system() == "Windows"
-RESET="\033[0m"; BOLD="\033[1m"; DIM="\033[2m"
-CYAN="\033[96m"; YELLOW="\033[93m"; GREEN="\033[92m"
-RED="\033[91m";  WHITE="\033[97m"; MAGENTA="\033[95m"
-BG_SEL="\033[48;5;24m"; BG_HDR="\033[48;5;236m"; BG_SEC="\033[48;5;17m"
+# 🔑 保留您的正式憑證
+LINE_CHANNEL_ACCESS_TOKEN = 'DmjqjDUd46PY0uH4XDzfLub8ZBuKGBdCxjSlRwnGg1CpQ0Zl3OJgJLCjiNap3GMiehSzy6WOhpuJx8glSQPv/nl0xSu8ywkQtQwJNO22U2IYNr6g43EdQp+aPEI1Nr+dmCyQP0frMj2UD6q2RdGVHwdB04t89/1O/w1cDnyilFU='
+LINE_CHANNEL_SECRET = 'dcdc8182d2a1eca73a46d20f1035cc14'
 
-if IS_WINDOWS:
-    import ctypes
-    try: ctypes.windll.kernel32.SetConsoleMode(ctypes.windll.kernel32.GetStdHandle(-11),7)
-    except: pass
+configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ── 球隊資料 (簡稱已全部中文化) ───────────────────────────────────────────────
-CL_TEAMS = [
-    {"abbr":"G",  "short":"巨人",      "name":"讀賣巨人",            "npb_id":"g",  "home_venues":["東京ドーム"], "color":"#E8522A"},
-    {"abbr":"T",  "short":"阪神",      "name":"阪神虎",              "npb_id":"t",  "home_venues":["甲子園"],     "color":"#F5D000"},
-    {"abbr":"C",  "short":"廣島",      "name":"廣島東洋鯉魚",        "npb_id":"c",  "home_venues":["マツダ"],     "color":"#D40000"},
-    {"abbr":"DB", "short":"DeNA",     "name":"橫濱DeNA海灣星",      "npb_id":"db", "home_venues":["横浜","ハマスタ"], "color":"#004990"},
-    {"abbr":"D",  "short":"中日",      "name":"中日龍",              "npb_id":"d",  "home_venues":["バンテリン","ナゴヤ"], "color":"#003087"},
-    {"abbr":"S",  "short":"養樂多",    "name":"東京養樂多燕子",       "npb_id":"s",  "home_venues":["神宮"],       "color":"#006AB7"},
-]
-PL_TEAMS = [
-    {"abbr":"H",  "short":"軟銀",      "name":"福岡軟銀鷹",          "npb_id":"h",  "home_venues":["みずほ","PayPay","福岡"], "color":"#F5A800"},
-    {"abbr":"L",  "short":"西武",      "name":"埼玉西武獅",          "npb_id":"l",  "home_venues":["ベルーナ","所沢"], "color":"#00529C"},
-    {"abbr":"F",  "short":"火腿",      "name":"北海道日本火腿鬥士",  "npb_id":"f",  "home_venues":["エスコン","北広島"], "color":"#003087"},
-    {"abbr":"B",  "short":"歐力士",    "name":"歐力士猛牛",          "npb_id":"b",  "home_venues":["京セラ","舞洲"], "color":"#004889"},
-    {"abbr":"M",  "short":"羅德",      "name":"千葉羅德海洋",        "npb_id":"m",  "home_venues":["ZOZO","ZOZOマリン"], "color":"#000000"},
-    {"abbr":"E",  "short":"樂天",      "name":"東北樂天金鷲",        "npb_id":"e",  "home_venues":["楽天モバイル","宮城"], "color":"#8B0000"},
-]
-ALL_TEAMS = CL_TEAMS + PL_TEAMS
+def generate_line_report(team, games, st):
+    n = st["total_games"]
+    report = f"⚾ 【{team['short']}】 近 {n} 場戰報\n"
+    report += "〰️〰️〰️〰️〰️〰️〰️〰️〰️\n"
+    
+    pw = st["pyth_wp"]
+    aw = st["actual_wp"]
+    diff_wp = aw - pw
+    trend = "🔥近期運氣佳" if diff_wp > 0.02 else "❄️近期運氣差" if diff_wp < -0.02 else "⚖️表現穩定"
+    
+    report += f"🎯 戰績：{st['wins']}勝 {st['losses']}敗 {st['draws']}平\n"
+    report += f"📊 勝率：{aw:.3f} (畢氏預期: {pw:.3f})\n"
+    report += f"💡 狀態：{trend}\n\n"
+    
+    hg, hs, ha = st["home_games"], st["home_scored"], st["home_allowed"]
+    ag, as_, aa = st["away_games"], st["away_scored"], st["away_allowed"]
+    if hg > 0:
+        report += f"🏠 主場({hg}G)：均得 {hs/hg:.1f} / 均失 {ha/hg:.1f}\n"
+    if ag > 0:
+        report += f"✈️ 客場({ag}G)：均得 {as_/ag:.1f} / 均失 {aa/ag:.1f}\n"
+    report += "\n"
 
-# 日文對手名稱自動翻譯對照表
-JAP_TEAM_MAP = {
-    "巨人": "巨人", "阪神": "阪神", "中日": "中日", "広島": "廣島", "ＤｅＮＡ": "DeNA", "DeNA": "DeNA", "ヤクルト": "養樂多",
-    "ソフトバンク": "軟銀", "西武": "西武", "ロッテ": "羅德", "楽天": "樂天", "オリックス": "歐力士", "日本ハム": "火腿", "日ハム": "火腿"
-}
+    report += "📋 近 5 場賽況：\n"
+    for g in games[:5]:
+        v = "主" if g["venue"] == "home" else "客"
+        r = "勝" if g["result"] == "W" else "敗" if g["result"] == "L" else "平"
+        report += f"{g['date'][5:]} ({v}) vs {g['opponent']:<2} | {g['scored']}:{g['allowed']} {r}\n"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "zh-TW,zh;q=0.9,ja-JP;q=0.8",
-    "Referer": "https://npb.jp/",
-}
+    orn = st["one_run_games"]
+    orw = st["one_run_wins"]
+    if orn > 0:
+        or_wp = orw / orn
+        report += f"\n🤏 一分差戰績：{orn}場 {orw}勝 (勝率 {or_wp:.3f})"
+    
+    bon = st["blowout_games"]
+    bow = st["blowout_wins"]
+    bol = st["blowout_losses"]
+    if bon > 0:
+        bo_wp = bow / bon
+        report += f"\n💥 大比分戰績：{bon}場 {bow}勝 {bol}敗 (勝率 {bo_wp:.3f})"
+    
+    return report
 
-# ── 按鍵 ──────────────────────────────────────────────────────────────────────
-def getch():
-    if IS_WINDOWS:
-        import msvcrt
-        ch = msvcrt.getwch()
-        if ch in ("\x00","\xe0"):
+@app.route("/callback", methods=['POST'])
+def callback():
+    signature = request.headers['X-Line-Signature']
+    body = request.get_data(as_text=True)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+    return 'OK'
+
+@handler.add(MessageEvent, message=TextMessageContent)
+def handle_message(event):
+    user_text = event.message.text.strip()
+    
+    target_team = None
+    for t in npb.ALL_TEAMS:
+        # 💡 建立超強大兼容別名池，不管是中文、日文舊稱、英文縮寫或全名通通能識別
+        match_pool = [t['short'], t['name'], t['abbr']]
+        if t['abbr'] == 'S': match_pool += ['ヤクルト', '養樂多']
+        if t['abbr'] == 'H': match_pool += ['SoftBank', '軟銀', 'ソフトバンク']
+        if t['abbr'] == 'F': match_pool += ['日ハム', '火腿', '日本ハム']
+        if t['abbr'] == 'B': match_pool += ['オリックス', '歐力士']
+        if t['abbr'] == 'M': match_pool += ['羅德', 'ロッテ']
+        if t['abbr'] == 'E': match_pool += ['樂天', '楽天']
+        if t['abbr'] == 'C': match_pool += ['廣島', '広島']
+        
+        if user_text in match_pool:
+            target_team = t
+            break
+
+    if target_team:
+        try:
+            games = npb.fetch_game_results(target_team, max_games=10)
+            if not games:
+                reply_text = f"⚠️ 目前無法獲取 {target_team['short']} 的資料。"
+                reply_message = TextMessage(text=reply_text)
+            else:
+                st = npb.compute_all(games)
+                reply_text = generate_line_report(target_team, games, st)
+                reply_message = TextMessage(text=reply_text)
+        except Exception as e:
+            reply_text = f"⚠️ 抓取或處理資料時發生錯誤：\n{str(e)}\n請稍後再試。"
+            reply_message = TextMessage(text=reply_text)
+            
+    else:
+        quick_reply_items = []
+        for t in npb.ALL_TEAMS:
+            quick_reply_items.append(
+                QuickReplyItem(
+                    action=MessageAction(
+                        label=t['short'], # 按鈕標籤現在全部都是親切的中文囉！
+                        text=t['short']
+                    )
+                )
+            )
+        
+        reply_message = TextMessage(
+            text="⚾ 歡迎使用日職進階戰報小幫手！\n\n請點選下方按鈕，選擇您想查詢的球隊：",
+            quick_reply=QuickReply(items=quick_reply_items)
+        )
+
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+        line_bot_api.reply_message_with_http_info(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[reply_message]
+            )
+        )
+
+if __name__ == "__main__":
+    app.run(port=5000)
