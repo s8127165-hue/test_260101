@@ -1,8 +1,8 @@
 from flask import Flask, request, abort
 import os
+import requests
+from bs4 import BeautifulSoup
 import npb_team_stats as npb
-
-# 匯入 Gemini API 套件
 import google.generativeai as genai
 
 from linebot.v3 import WebhookHandler
@@ -28,7 +28,7 @@ LINE_CHANNEL_SECRET = 'dcdc8182d2a1eca73a46d20f1035cc14'
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 🤖 初始化 Gemini 設定 (會從環境變數讀取 API Key)
+# 🤖 初始化 Gemini 設定
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 
@@ -76,32 +76,27 @@ def generate_line_report(team, games, st):
     return report
 
 def ask_gemini_analyst(user_input, t1, st1, t2, st2):
-    """將雙方進階數據與先發投手打包，請 Gemini 生成專業球評預測"""
     prompt = f"""
     你是一位精通日本職棒（NPB）的資深專業球評與棒球統計學專家。
-    請根據以下兩支球隊近 10 場的硬核統計數據，以及使用者提供的預告先發投手資訊，為明天的比賽進行深度的勝負預測分析。
+    請根據以下兩支球隊近 10 場的硬核統計數據，以及最新的預告先發投手資訊，為明天的比賽進行深度的勝負預測分析。
 
-    使用者輸入的對戰與投手資訊："{user_input}"
+    比賽資訊："{user_input}"
 
     📈 數據庫資料：
     【{t1['short']}】近10場指標：
-    - 實際戰績：{st1['wins']}勝 {st1['losses']}敗 {st1['draws']}平 (實際勝率: {st1['actual_wp']:.3f})
-    - 畢氏預期勝率：{st1['pyth_wp']:.3f}
-    - 團隊進攻/防守：場均得分 {st1['avg_scored']:.1f} 分 / 場均失分 {st1['avg_allowed']:.1f} 分
-    - 一分差抗壓戰績：{st1['one_run_wins']}勝-{st1['one_run_games']-st1['one_run_wins']}敗
-    - 大比分拉開戰績：{st1['blowout_wins']}勝-{st1['blowout_losses']}敗
+    - 實際戰績：{st1['wins']}勝 {st1['losses']}敗 (勝率: {st1['actual_wp']:.3f}) / 畢氏勝率：{st1['pyth_wp']:.3f}
+    - 場均得失分：得 {st1['avg_scored']:.1f} / 失 {st1['avg_allowed']:.1f}
+    - 一分差戰績：{st1['one_run_wins']}勝-{st1['one_run_games']-st1['one_run_wins']}敗 / 大比分戰績：{st1['blowout_wins']}勝-{st1['blowout_losses']}敗
 
     【{t2['short']}】近10場指標：
-    - 實際戰績：{st2['wins']}勝 {st2['losses']}敗 {st2['draws']}平 (實際勝率: {st2['actual_wp']:.3f})
-    - 畢氏預期勝率：{st2['pyth_wp']:.3f}
-    - 團隊進攻/防守：場均得分 {st2['avg_scored']:.1f} 分 / 場均失分 {st2['avg_allowed']:.1f} 分
-    - 一分差抗壓戰績：{st2['one_run_wins']}勝-{st2['one_run_games']-st2['one_run_wins']}敗
-    - 大比分拉開戰績：{st2['blowout_wins']}勝-{st2['blowout_losses']}敗
+    - 實際戰績：{st2['wins']}勝 {st2['losses']}敗 (勝率: {st2['actual_wp']:.3f}) / 畢氏勝率：{st2['pyth_wp']:.3f}
+    - 場均得失分：得 {st2['avg_scored']:.1f} / 失 {st2['avg_allowed']:.1f}
+    - 一分差戰績：{st2['one_run_wins']}勝-{st2['one_run_games']-st2['one_run_wins']}敗 / 大比分戰績：{st2['blowout_wins']}勝-{st2['blowout_losses']}敗
 
     請撰寫一篇約 250-300 字的繁體中文專業預測報告。
     格式請條列化清晰呈現：
     1. 📊 【近況對決】: 比較兩隊近期火力與牛棚穩定度的優劣勢。
-    2. 🎯 【先發觀賽點】: 結合兩隊場均得失分，點出使用者提及的先發投手的壓制關鍵。
+    2. 🎯 【先發觀賽點】: 結合兩隊場均得失分，點出先發投手的壓制關鍵。
     3. 🔮 【球評預測值】: 給出最終看好哪一隊勝出，以及可能的比分走向。
     
     語氣要犀利、專業、客觀，像體育新聞的專家專欄。
@@ -123,46 +118,8 @@ def callback():
 def handle_message(event):
     user_text = event.message.text.strip()
     
-    # ── 情況 1：檢查是否為「AI 賽前預測」的對對碰指令（包含 "vs" 且能辨識出兩隊） ──
+    # ── 情況 1：手動輸入「對戰」模式 (保留這個彩蛋，如果您想測試假設性的對決) ──
     if "vs" in user_text.lower():
-        found_teams = []
-        for t in npb.ALL_TEAMS:
-            if t['short'] in user_text and t not in found_teams:
-                found_teams.append(t)
-        
-        if len(found_teams) == 2:
-            t1, t2 = found_teams[0], found_teams[1]
-            # 先回傳「計算中」避免 LINE 超時
-            with ApiClient(configuration) as api_client:
-                line_bot_api = MessagingApi(api_client)
-                line_bot_api.reply_message(
-                    ReplyMessageRequest(
-                        reply_token=event.reply_token,
-                        messages=[TextMessage(text=f"🤖 專業球評正在調閱 【{t1['short']}】 與 【{t2['short']}】 的近十場進階數據庫，請稍候...")]
-                    )
-                )
-            
-            # 背景執行雙網頁爬蟲與 AI 計算
-            try:
-                g1 = npb.fetch_game_results(t1, max_games=10)
-                g2 = npb.fetch_game_results(t2, max_games=10)
-                st1 = npb.compute_all(g1)
-                st2 = npb.compute_all(g2)
-                
-                ai_analysis = ask_gemini_analyst(user_text, t1, st1, t2, st2)
-                
-                # 主動 Push 報告給用戶 (這裡簡化為發新訊息，實務上 Render 免費版建議直接用 reply，但因為前面reply用了，此處用 push)
-                # 為了避免複雜的 Push ID 獲取，我們在 handle 結束前直接呼叫
-                # 註：此處若免費帳號有限制 push，亦可直接於一開始不 reply，直接等 AI 跑完（約3-5秒）再統一 reply。
-                # 免費版最穩健作法：直接讓使用者等 4 秒後直接 Reply。故我們把前面的「計算中」拿掉，改為直接一條龍處理：
-            except Exception as e:
-                ai_analysis = f"⚠️ AI 球評分析時發生錯誤：{str(e)}"
-            
-            # 改為直接回覆（一條龍等候）
-            # 注意：為配合此邏輯，已移除上方的先行 reply。
-            
-        # 為了程式碼乾淨與不超時，我們直接在此處做一條龍的等待回覆：
-        # (重新整理邏輯：為了不超時，直接讓 AI 運算並回傳)
         found_teams = []
         for t in npb.ALL_TEAMS:
             if t['short'] in user_text and t not in found_teams:
@@ -181,7 +138,7 @@ def handle_message(event):
                 )
             return
 
-    # ── 情況 2：單純點擊某一隊 ──
+    # ── 情況 2：辨識使用者點擊的球隊 ──
     target_team = None
     for t in npb.ALL_TEAMS:
         match_pool = [t['short'], t['name'], t['abbr']]
@@ -198,7 +155,6 @@ def handle_message(event):
             break
 
     if target_team:
-        # 當使用者選了某一隊，彈出二選一：要看歷史戰報，還是要做 AI 預測
         quick_reply_items = [
             QuickReplyItem(action=MessageAction(label=f"📊 查看 {target_team['short']} 戰報", text=f"戰報 {target_team['short']}")),
             QuickReplyItem(action=MessageAction(label=f"🔮 AI 預測明天比賽", text=f"預測 {target_team['short']}"))
@@ -219,12 +175,60 @@ def handle_message(event):
         else:
             reply_message = TextMessage(text="⚠️ 找不到該球隊資料。")
 
-    # ── 情況 4：使用者點選了「🔮 AI 預測明天比賽」 ──
+    # ── 情況 4：全新功能！全自動抓取 NPB 預告先發與 AI 分析 ──
     elif user_text.startswith("預測 "):
         team_name = user_text.split(" ")[1]
-        reply_message = TextMessage(
-            text=f"請複製並修改以下格式回傳給機器人（注意保留 vs）：\n\n{team_name} 先發投手名字 vs 對手隊名 先發投手名字"
-        )
+        t = next((x for x in npb.ALL_TEAMS if x['short'] == team_name), None)
+        
+        if t:
+            try:
+                # 步驟 A：爬取 NPB 官網預告先發
+                url = "https://npb.jp/announcement/starter/"
+                r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+                r.encoding = 'utf-8'
+                soup = BeautifulSoup(r.text, "html.parser")
+                # 轉成純文字並移除日文全形空白，方便 AI 閱讀
+                raw_text = soup.get_text(separator=' ', strip=True).replace(" ", "")
+                
+                # 步驟 B：呼叫 Gemini 當資料擷取員，精準找出對手與投手
+                extraction_prompt = f"""
+                這是 NPB 官網「預告先發」的純文字：
+                {raw_text[:4000]}
+                
+                請幫我找出【{team_name}】的「對戰對手」與雙方「先發投手」。
+                請回傳一行文字，用半形逗號分隔，格式嚴格如下：
+                對手簡稱,{team_name}的投手,對手的投手
+                
+                注意：
+                1. 對手簡稱必須是這 12 個之一：巨人, 阪神, 廣島, DeNA, 中日, 養樂多, 軟銀, 西武, 火腿, 歐力士, 羅德, 樂天。
+                2. 若無賽程，直接回傳: NOT_FOUND
+                """
+                matchup_str = gemini_model.generate_content(extraction_prompt).text.strip()
+                
+                if "NOT_FOUND" in matchup_str or "," not in matchup_str:
+                    reply_message = TextMessage(text=f"⚠️ 目前 NPB 官網尚未公布【{team_name}】的預告先發，或是明日無賽程（週一通常休兵）。")
+                else:
+                    parts = [p.strip() for p in matchup_str.split(",")]
+                    opp_name, my_pitcher, opp_pitcher = parts[0], parts[1], parts[2]
+                    
+                    opp_team = next((x for x in npb.ALL_TEAMS if x['short'] == opp_name), None)
+                    if not opp_team:
+                        reply_message = TextMessage(text=f"⚠️ 抓取成功，但無法辨識對手名稱：{opp_name}")
+                    else:
+                        # 步驟 C：自動調閱雙方近 10 場硬核數據
+                        g1 = npb.fetch_game_results(t, max_games=10)
+                        g2 = npb.fetch_game_results(opp_team, max_games=10)
+                        st1 = npb.compute_all(g1)
+                        st2 = npb.compute_all(g2)
+                        
+                        # 步驟 D：呼叫 Gemini 球評進行專業賽前預測
+                        user_input_mock = f"預告先發：【{team_name}】{my_pitcher} vs 【{opp_name}】{opp_pitcher}"
+                        analysis_text = ask_gemini_analyst(user_input_mock, t, st1, opp_team, st2)
+                        
+                        reply_message = TextMessage(text=f"✅ 已自動取得預告先發資料！\n{user_input_mock}\n\n{analysis_text}")
+                        
+            except Exception as e:
+                reply_message = TextMessage(text=f"⚠️ 自動查詢先發或分析時發生網路錯誤：\n{str(e)}")
 
     # ── 情況 5：輸入其他任何文字，滑出 12 隊中文按鈕 ──
     else:
