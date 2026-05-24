@@ -32,7 +32,8 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
 #gemini_model = genai.GenerativeModel('gemini-1.5-flash')
 # 修改後：
-gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest')
+# ✅ 改成這樣：
+gemini_model = genai.GenerativeModel('gemini-pro')
 
 def generate_line_report(team, games, st):
     n = st["total_games"]
